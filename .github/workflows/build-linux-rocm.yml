@@ -1,0 +1,126 @@
+name: Linux ROCm (AMD GPU) Custom Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      llama_version:
+        description: 'llama.cpp version (tag or "latest")'
+        required: true
+        default: 'latest'
+        type: string
+      rocm_version:
+        description: 'ROCm version'
+        required: true
+        default: '6.1.2'
+        type: choice
+        options:
+          - '6.1.2'
+          - '6.0.0'
+          - '5.7.0'
+      gpu_architectures:
+        description: 'GPU architectures (e.g., "gfx900;gfx906;gfx908;gfx90a;gfx1030;gfx1100")'
+        required: true
+        default: 'gfx900;gfx906;gfx908;gfx90a;gfx1030;gfx1100'
+        type: string
+      build_type:
+        description: 'Build type'
+        required: true
+        default: 'Release'
+        type: choice
+        options:
+          - 'Release'
+          - 'RelWithDebInfo'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    container:
+      image: rocm/dev-ubuntu-22.04:${{ inputs.rocm_version }}
+      
+    steps:
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y \
+            build-essential \
+            cmake \
+            ninja-build \
+            git \
+            wget \
+            curl \
+            ccache
+            
+      - name: Download llama.cpp source
+        run: |
+          if [ "${{ inputs.llama_version }}" = "latest" ]; then
+            RELEASE_TAG=$(curl -s https://api.github.com/repos/ggml-org/llama.cpp/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+          else
+            RELEASE_TAG="${{ inputs.llama_version }}"
+          fi
+          
+          echo "Downloading llama.cpp ${RELEASE_TAG}"
+          wget -q https://github.com/ggml-org/llama.cpp/archive/refs/tags/${RELEASE_TAG}.tar.gz
+          tar -xzf ${RELEASE_TAG}.tar.gz
+          mv llama.cpp-${RELEASE_TAG#v} llama.cpp
+          echo "RELEASE_TAG=${RELEASE_TAG}" >> $GITHUB_ENV
+          
+      - name: Configure CMake
+        working-directory: llama.cpp
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} \
+            -DGGML_HIP=ON \
+            -DAMDGPU_TARGETS="${{ inputs.gpu_architectures }}" \
+            -DCMAKE_C_COMPILER=/opt/rocm/llvm/bin/clang \
+            -DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++ \
+            -DGGML_HIP_ROCWMMA_FATTN=ON \
+            -DGGML_BACKEND_DL=ON \
+            -DLLAMA_BUILD_SERVER=ON \
+            -DLLAMA_BUILD_EXAMPLES=ON
+            
+      - name: Build
+        working-directory: llama.cpp
+        run: |
+          cmake --build build --config ${{ inputs.build_type }} -j $(nproc)
+          
+      - name: Package artifacts
+        run: |
+          cd llama.cpp/build
+          mkdir -p package/bin package/lib package/meta
+          
+          # Copy binaries
+          find bin -maxdepth 1 -type f \( -name 'llama-*' -o -name 'ggml-*' \) -exec cp -av {} package/bin/ \; 2>/dev/null || true
+          
+          # Copy libraries
+          find . -maxdepth 3 -type f \( -name 'libllama*' -o -name 'libggml*' \) -exec cp -av {} package/lib/ \; 2>/dev/null || true
+          
+          # Create metadata files
+          echo "${{ env.RELEASE_TAG }}" > package/meta/git-describe.txt
+          /opt/rocm/bin/hipcc --version > package/meta/hipcc-version.txt || true
+          cmake --version > package/meta/cmake-version.txt
+          
+          if compgen -G "package/bin/*" > /dev/null; then
+            file package/bin/* > package/meta/file-bin.txt || true
+            ldd package/bin/* > package/meta/ldd-bin.txt || true
+          fi
+          
+          # Create BUILD_INFO.txt
+          cat > package/BUILD_INFO.txt <<EOF
+          llama.cpp version: ${{ env.RELEASE_TAG }}
+          ROCm version: ${{ inputs.rocm_version }}
+          GPU architectures: ${{ inputs.gpu_architectures }}
+          Build type: ${{ inputs.build_type }}
+          Built on: $(date -u)
+          EOF
+          
+          tar -czf ../../llama-cpp-rocm${{ inputs.rocm_version }}-linux.tar.gz package/
+          sha256sum ../../llama-cpp-rocm${{ inputs.rocm_version }}-linux.tar.gz > ../../llama-cpp-rocm${{ inputs.rocm_version }}-linux.tar.gz.sha256
+          
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-cpp-rocm${{ inputs.rocm_version }}-linux-x64
+          path: |
+            llama-cpp-rocm${{ inputs.rocm_version }}-linux.tar.gz
+            llama-cpp-rocm${{ inputs.rocm_version }}-linux.tar.gz.sha256
+          retention-days: 30

@@ -1,0 +1,158 @@
+name: Windows CPU-only Custom Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      llama_version:
+        description: 'llama.cpp version (tag or "latest")'
+        required: true
+        default: 'latest'
+        type: string
+      architecture:
+        description: 'Target architecture'
+        required: true
+        default: 'x64'
+        type: choice
+        options:
+          - 'x64'
+          - 'ARM64'
+      compiler:
+        description: 'Compiler toolchain'
+        required: true
+        default: 'msvc'
+        type: choice
+        options:
+          - 'msvc'
+          - 'clang'
+      build_type:
+        description: 'Build type'
+        required: true
+        default: 'Release'
+        type: choice
+        options:
+          - 'Release'
+          - 'RelWithDebInfo'
+      enable_openblas:
+        description: 'Enable OpenBLAS'
+        required: true
+        default: false
+        type: boolean
+      enable_opencl:
+        description: 'Enable OpenCL'
+        required: true
+        default: false
+        type: boolean
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+      - name: Setup OpenBLAS
+        if: inputs.enable_openblas == true
+        shell: pwsh
+        run: |
+          $openblasVersion = "0.3.27"
+          $url = "https://github.com/OpenMathLib/OpenBLAS/releases/download/v${openblasVersion}/OpenBLAS-${openblasVersion}-x64.zip"
+          Invoke-WebRequest -Uri $url -OutFile "openblas.zip"
+          Expand-Archive -Path "openblas.zip" -DestinationPath "openblas"
+          echo "OPENBLAS_PATH=$pwd\openblas" >> $env:GITHUB_ENV
+          
+      - name: Download llama.cpp source
+        shell: pwsh
+        run: |
+          if ("${{ inputs.llama_version }}" -eq "latest") {
+            $release = Invoke-RestMethod -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
+            $releaseTag = $release.tag_name
+          } else {
+            $releaseTag = "${{ inputs.llama_version }}"
+          }
+          
+          Write-Host "Downloading llama.cpp $releaseTag"
+          $url = "https://github.com/ggml-org/llama.cpp/archive/refs/tags/$releaseTag.zip"
+          Invoke-WebRequest -Uri $url -OutFile "llama.zip"
+          Expand-Archive -Path "llama.zip" -DestinationPath "."
+          
+          $extractedName = Get-ChildItem -Directory | Where-Object { $_.Name -like "llama.cpp-*" } | Select-Object -First 1
+          Move-Item -Path $extractedName.FullName -Destination "llama.cpp"
+          
+          echo "RELEASE_TAG=$releaseTag" >> $env:GITHUB_ENV
+          
+      - name: Setup MSVC
+        if: inputs.compiler == 'msvc'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ inputs.architecture }}
+          
+      - name: Configure CMake
+        shell: pwsh
+        run: |
+          $cmakeArgs = @(
+            "-B", "build",
+            "-S", "llama.cpp",
+            "-DCMAKE_BUILD_TYPE=${{ inputs.build_type }}",
+            "-DGGML_BACKEND_DL=ON",
+            "-DLLAMA_BUILD_SERVER=ON",
+            "-DLLAMA_BUILD_EXAMPLES=ON",
+            "-DBUILD_SHARED_LIBS=OFF"
+          )
+          
+          if ("${{ inputs.architecture }}" -eq "ARM64") {
+            $cmakeArgs += "-A", "ARM64"
+          }
+          
+          if ("${{ inputs.compiler }}" -eq "clang") {
+            $cmakeArgs += "-T", "ClangCL"
+          }
+          
+          if ("${{ inputs.enable_openblas }}" -eq "true") {
+            $cmakeArgs += "-DGGML_BLAS=ON"
+            $cmakeArgs += "-DGGML_BLAS_VENDOR=OpenBLAS"
+            $cmakeArgs += "-DBLAS_INCLUDE_DIRS=$env:OPENBLAS_PATH\include"
+            $cmakeArgs += "-DBLAS_LIBRARIES=$env:OPENBLAS_PATH\lib\openblas.lib"
+          }
+          
+          if ("${{ inputs.enable_opencl }}" -eq "true") {
+            $cmakeArgs += "-DGGML_OPENCL=ON"
+          }
+          
+          cmake @cmakeArgs
+          
+      - name: Build
+        run: |
+          cmake --build build --config ${{ inputs.build_type }} -j ${env:NUMBER_OF_PROCESSORS}
+          
+      - name: Package artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path "package/bin" -Force
+          
+          # Copy binaries
+          Copy-Item -Path "build/bin/${{ inputs.build_type }}/*.exe" -Destination "package/bin/" -ErrorAction SilentlyContinue
+          Copy-Item -Path "build/bin/${{ inputs.build_type }}/*.dll" -Destination "package/bin/" -ErrorAction SilentlyContinue
+          
+          # Copy OpenBLAS DLLs if enabled
+          if ("${{ inputs.enable_openblas }}" -eq "true") {
+            Copy-Item -Path "$env:OPENBLAS_PATH/bin/*.dll" -Destination "package/bin/" -ErrorAction SilentlyContinue
+          }
+          
+          # Create metadata
+          @"
+          llama.cpp version: ${{ env.RELEASE_TAG }}
+          Architecture: ${{ inputs.architecture }}
+          Compiler: ${{ inputs.compiler }}
+          Build type: ${{ inputs.build_type }}
+          OpenBLAS: ${{ inputs.enable_openblas }}
+          OpenCL: ${{ inputs.enable_opencl }}
+          Built on: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")
+          "@ | Out-File -FilePath "package/BUILD_INFO.txt"
+          
+          # Create zip
+          Compress-Archive -Path "package/*" -DestinationPath "llama-cpp-cpu-windows-${{ inputs.architecture }}.zip"
+          
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-cpp-cpu-windows-${{ inputs.architecture }}-${{ inputs.compiler }}
+          path: llama-cpp-cpu-windows-${{ inputs.architecture }}.zip
+          retention-days: 30

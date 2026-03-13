@@ -1,0 +1,157 @@
+name: Linux ARM64 Cross-Compile Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      llama_version:
+        description: 'llama.cpp version (tag or "latest")'
+        required: true
+        default: 'latest'
+        type: string
+      build_type:
+        description: 'Build type'
+        required: true
+        default: 'Release'
+        type: choice
+        options:
+          - 'Release'
+          - 'RelWithDebInfo'
+      enable_openblas:
+        description: 'Enable OpenBLAS (ARM64)'
+        required: true
+        default: true
+        type: boolean
+      enable_vulkan:
+        description: 'Enable Vulkan (ARM64)'
+        required: true
+        default: false
+        type: boolean
+
+jobs:
+  build-arm64:
+    runs-on: ubuntu-24.04
+    
+    steps:
+      - name: Download llama.cpp source
+        run: |
+          if [ "${{ inputs.llama_version }}" = "latest" ]; then
+            RELEASE_TAG=$(curl -s https://api.github.com/repos/ggml-org/llama.cpp/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+          else
+            RELEASE_TAG="${{ inputs.llama_version }}"
+          fi
+          
+          echo "Downloading llama.cpp ${RELEASE_TAG}"
+          wget -q https://github.com/ggml-org/llama.cpp/archive/refs/tags/${RELEASE_TAG}.tar.gz
+          tar -xzf ${RELEASE_TAG}.tar.gz
+          mv llama.cpp-${RELEASE_TAG#v} llama.cpp
+          echo "RELEASE_TAG=${RELEASE_TAG}" >> $GITHUB_ENV
+          
+      - name: Setup ARM64 cross-compilation
+        run: |
+          sudo dpkg --add-architecture arm64
+          
+          # Add arch-specific repositories
+          cat << EOF | sudo tee /etc/apt/sources.list.d/arm64-ports.list
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ noble main universe
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ noble-updates main universe
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ noble-security main universe
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ noble-backports main universe
+          EOF
+          
+          sudo apt-get update || true
+          
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ninja-build \
+            crossbuild-essential-arm64
+          
+          if [ "${{ inputs.enable_openblas }}" = "true" ]; then
+            sudo apt-get install -y libopenblas-dev:arm64
+          fi
+          
+          if [ "${{ inputs.enable_vulkan }}" = "true" ]; then
+            sudo apt-get install -y glslc libvulkan-dev:arm64
+          fi
+            
+      - name: Configure CMake
+        working-directory: llama.cpp
+        run: |
+          CMAKE_ARGS=(
+            -B build
+            -G Ninja
+            -DLLAMA_OPENSSL=OFF
+            -DCMAKE_BUILD_TYPE=${{ inputs.build_type }}
+            -DGGML_OPENMP=OFF
+            -DLLAMA_BUILD_SERVER=ON
+            -DLLAMA_BUILD_EXAMPLES=ON
+            -DLLAMA_BUILD_TESTS=OFF
+            -DCMAKE_SYSTEM_NAME=Linux
+            -DCMAKE_SYSTEM_PROCESSOR=aarch64
+            -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc
+            -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+            -DCMAKE_FIND_ROOT_PATH=/usr/lib/aarch64-linux-gnu
+            -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER
+            -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY
+            -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH
+          )
+          
+          if [ "${{ inputs.enable_openblas }}" = "true" ]; then
+            CMAKE_ARGS+=(
+              -DGGML_BLAS=ON
+              -DGGML_BLAS_VENDOR=OpenBLAS
+            )
+          fi
+          
+          if [ "${{ inputs.enable_vulkan }}" = "true" ]; then
+            CMAKE_ARGS+=(-DGGML_VULKAN=ON)
+          fi
+          
+          cmake "${CMAKE_ARGS[@]}"
+            
+      - name: Build
+        working-directory: llama.cpp
+        run: |
+          cmake --build build --config ${{ inputs.build_type }} -j $(nproc)
+          
+      - name: Package artifacts
+        run: |
+          cd llama.cpp/build
+          mkdir -p package/bin package/lib package/meta
+          
+          # Copy binaries
+          find bin -maxdepth 1 -type f \( -name 'llama-*' -o -name 'ggml-*' \) -exec cp -av {} package/bin/ \; 2>/dev/null || true
+          
+          # Copy libraries
+          find . -maxdepth 3 -type f \( -name 'libllama*' -o -name 'libggml*' \) -exec cp -av {} package/lib/ \; 2>/dev/null || true
+          
+          # Create metadata files
+          echo "${{ env.RELEASE_TAG }}" > package/meta/git-describe.txt
+          cat /etc/os-release > package/meta/os-release.txt || true
+          aarch64-linux-gnu-gcc --version > package/meta/gcc-version.txt
+          cmake --version > package/meta/cmake-version.txt
+          
+          if compgen -G "package/bin/*" > /dev/null; then
+            file package/bin/* > package/meta/file-bin.txt || true
+          fi
+          
+          # Create BUILD_INFO.txt
+          cat > package/BUILD_INFO.txt <<EOF
+          llama.cpp version: ${{ env.RELEASE_TAG }}
+          Architecture: ARM64 (aarch64)
+          Build type: ${{ inputs.build_type }}
+          OpenBLAS: ${{ inputs.enable_openblas }}
+          Vulkan: ${{ inputs.enable_vulkan }}
+          Built on: $(date -u)
+          Cross-compiled on: x86_64 Ubuntu 24.04
+          EOF
+          
+          tar -czf ../../llama-cpp-cpu-linux-arm64.tar.gz package/
+          
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-cpp-cpu-linux-arm64
+          path: llama-cpp-cpu-linux-arm64.tar.gz
+          retention-days: 30

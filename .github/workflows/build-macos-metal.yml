@@ -1,0 +1,105 @@
+name: macOS Metal Custom Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      llama_version:
+        description: 'llama.cpp version (tag or "latest")'
+        required: true
+        default: 'latest'
+        type: string
+      architecture:
+        description: 'Target architecture'
+        required: true
+        default: 'arm64'
+        type: choice
+        options:
+          - 'arm64'
+          - 'x86_64'
+          - 'universal'
+      build_type:
+        description: 'Build type'
+        required: true
+        default: 'Release'
+        type: choice
+        options:
+          - 'Release'
+          - 'RelWithDebInfo'
+      enable_metal:
+        description: 'Enable Metal acceleration'
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  build:
+    runs-on: ${{ inputs.architecture == 'x86_64' && 'macos-13' || 'macos-latest' }}
+    
+    steps:
+      - name: Download llama.cpp source
+        run: |
+          if [ "${{ inputs.llama_version }}" = "latest" ]; then
+            RELEASE_TAG=$(curl -s https://api.github.com/repos/ggml-org/llama.cpp/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+          else
+            RELEASE_TAG="${{ inputs.llama_version }}"
+          fi
+          
+          echo "Downloading llama.cpp ${RELEASE_TAG}"
+          curl -L -o llama.tar.gz "https://github.com/ggml-org/llama.cpp/archive/refs/tags/${RELEASE_TAG}.tar.gz"
+          tar -xzf llama.tar.gz
+          mv llama.cpp-${RELEASE_TAG#v} llama.cpp
+          echo "RELEASE_TAG=${RELEASE_TAG}" >> $GITHUB_ENV
+          
+      - name: Configure CMake
+        working-directory: llama.cpp
+        run: |
+          if [ "${{ inputs.architecture }}" = "universal" ]; then
+            ARCH_FLAGS="-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"
+          else
+            ARCH_FLAGS="-DCMAKE_OSX_ARCHITECTURES=${{ inputs.architecture }}"
+          fi
+          
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} \
+            ${ARCH_FLAGS} \
+            -DGGML_METAL=${{ inputs.enable_metal && 'ON' || 'OFF' }} \
+            -DGGML_BACKEND_DL=ON \
+            -DLLAMA_BUILD_SERVER=ON \
+            -DLLAMA_BUILD_EXAMPLES=ON \
+            -DBUILD_SHARED_LIBS=OFF
+            
+      - name: Build
+        working-directory: llama.cpp
+        run: |
+          cmake --build build --config ${{ inputs.build_type }} -j $(sysctl -n hw.ncpu)
+          
+      - name: Package artifacts
+        run: |
+          cd llama.cpp/build
+          mkdir -p package/bin
+          
+          # Copy binaries
+          cp bin/llama-* package/bin/ 2>/dev/null || true
+          
+          # Copy Metal library if enabled
+          if [ "${{ inputs.enable_metal }}" = "true" ]; then
+            cp bin/*.metallib package/bin/ 2>/dev/null || true
+          fi
+          
+          # Create metadata
+          cat > package/BUILD_INFO.txt <<EOF
+          llama.cpp version: ${{ env.RELEASE_TAG }}
+          Architecture: ${{ inputs.architecture }}
+          Metal: ${{ inputs.enable_metal }}
+          Build type: ${{ inputs.build_type }}
+          Built on: $(date -u)
+          EOF
+          
+          tar -czf ../../llama-cpp-metal-macos-${{ inputs.architecture }}.tar.gz package/
+          
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-cpp-metal-macos-${{ inputs.architecture }}
+          path: llama-cpp-metal-macos-${{ inputs.architecture }}.tar.gz
+          retention-days: 30

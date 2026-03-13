@@ -1,0 +1,148 @@
+name: Linux CUDA Custom Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      llama_version:
+        description: 'llama.cpp version (tag or "latest")'
+        required: true
+        default: 'latest'
+        type: string
+      cuda_version:
+        description: 'CUDA version'
+        required: true
+        default: '12.6.2'
+        type: choice
+        options:
+          - '12.8.0'
+          - '12.6.2'
+          - '12.4.0'
+          - '12.2.0'
+          - '11.8.0'
+      gpu_architectures:
+        description: 'GPU architectures (semicolon-separated, e.g., "70;75;80;86;89")'
+        required: true
+        default: '70;75;80;86;89;90'
+        type: string
+      build_type:
+        description: 'Build type'
+        required: true
+        default: 'Release'
+        type: choice
+        options:
+          - 'Release'
+          - 'RelWithDebInfo'
+      enable_cublas:
+        description: 'Enable cuBLAS'
+        required: true
+        default: true
+        type: boolean
+      enable_flash_attn:
+        description: 'Enable Flash Attention'
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: nvidia/cuda:${{ inputs.cuda_version }}-devel-ubuntu24.04
+      
+    steps:
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y \
+            build-essential \
+            cmake \
+            ninja-build \
+            git \
+            wget \
+            curl \
+            libcurl4-openssl-dev \
+            ccache
+            
+      - name: Download llama.cpp source
+        run: |
+          if [ "${{ inputs.llama_version }}" = "latest" ]; then
+            RELEASE_TAG=$(curl -s https://api.github.com/repos/ggml-org/llama.cpp/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+          else
+            RELEASE_TAG="${{ inputs.llama_version }}"
+          fi
+          
+          echo "Downloading llama.cpp ${RELEASE_TAG}"
+          wget -q https://github.com/ggml-org/llama.cpp/archive/refs/tags/${RELEASE_TAG}.tar.gz
+          tar -xzf ${RELEASE_TAG}.tar.gz
+          mv llama.cpp-${RELEASE_TAG#v} llama.cpp
+          echo "RELEASE_TAG=${RELEASE_TAG}" >> $GITHUB_ENV
+          
+      - name: Configure CMake
+        working-directory: llama.cpp
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} \
+            -DGGML_CUDA=ON \
+            -DCMAKE_CUDA_ARCHITECTURES="${{ inputs.gpu_architectures }}" \
+            -DGGML_CUDA_CUBLAS=${{ inputs.enable_cublas && 'ON' || 'OFF' }} \
+            -DGGML_CUDA_FA_ALL_QUANTS=${{ inputs.enable_flash_attn && 'ON' || 'OFF' }} \
+            -DGGML_BACKEND_DL=ON \
+            -DGGML_NATIVE=OFF \
+            -DLLAMA_BUILD_SERVER=ON \
+            -DLLAMA_BUILD_EXAMPLES=ON \
+            -DBUILD_SHARED_LIBS=OFF
+            
+      - name: Build
+        working-directory: llama.cpp
+        run: |
+          cmake --build build --config ${{ inputs.build_type }} -j $(nproc)
+          
+      - name: Package artifacts
+        run: |
+          cd llama.cpp/build
+          mkdir -p package/bin package/lib package/meta
+          
+          # Copy binaries
+          find bin -maxdepth 1 -type f \( -name 'llama-*' -o -name 'ggml-*' \) -exec cp -av {} package/bin/ \; 2>/dev/null || true
+          
+          # Copy libraries
+          find . -maxdepth 3 -type f \( -name 'libllama*' -o -name 'libggml*' \) -exec cp -av {} package/lib/ \; 2>/dev/null || true
+          
+          # Create metadata files
+          echo "${{ env.RELEASE_TAG }}" > package/meta/git-describe.txt
+          nvcc --version > package/meta/nvcc-version.txt
+          gcc --version > package/meta/gcc-version.txt
+          cmake --version > package/meta/cmake-version.txt
+          
+          if compgen -G "package/bin/*" > /dev/null; then
+            file package/bin/* > package/meta/file-bin.txt || true
+            ldd package/bin/* > package/meta/ldd-bin.txt || true
+          fi
+          
+          if compgen -G "package/lib/*" > /dev/null; then
+            file package/lib/* > package/meta/file-lib.txt || true
+            ldd package/lib/* > package/meta/ldd-lib.txt || true
+          fi
+          
+          # Create BUILD_INFO.txt
+          cat > package/BUILD_INFO.txt <<EOF
+          llama.cpp version: ${{ env.RELEASE_TAG }}
+          CUDA version: ${{ inputs.cuda_version }}
+          GPU architectures: ${{ inputs.gpu_architectures }}
+          Build type: ${{ inputs.build_type }}
+          cuBLAS: ${{ inputs.enable_cublas }}
+          Flash Attention: ${{ inputs.enable_flash_attn }}
+          Built on: $(date -u)
+          EOF
+          
+          tar -czf ../../llama-cpp-cuda${{ inputs.cuda_version }}-linux.tar.gz package/
+          sha256sum ../../llama-cpp-cuda${{ inputs.cuda_version }}-linux.tar.gz > ../../llama-cpp-cuda${{ inputs.cuda_version }}-linux.tar.gz.sha256
+          
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-cpp-cuda${{ inputs.cuda_version }}-linux-x64
+          path: |
+            llama-cpp-cuda${{ inputs.cuda_version }}-linux.tar.gz
+            llama-cpp-cuda${{ inputs.cuda_version }}-linux.tar.gz.sha256
+          retention-days: 30
