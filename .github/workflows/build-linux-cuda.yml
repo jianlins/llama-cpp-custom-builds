@@ -1,4 +1,4 @@
-# llama-cpp-custom-builds
+# llama-cpp-custom-builds - Build custom llama.cpp binaries
 name: Linux CUDA Custom Build
 
 on:
