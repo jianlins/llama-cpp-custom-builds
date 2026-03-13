@@ -110,26 +110,31 @@ jobs:
             findutils
           apt-get clean
 
-      - name: Checkout llama.cpp source
-        uses: actions/checkout@v4
-        with:
-          repository: ggerganov/llama.cpp
-          ref: ${{ inputs.llama_version == 'latest' && '' || inputs.llama_version }}
-          submodules: recursive
-          fetch-depth: 0
-
-      - name: Get version tag
+      - name: Resolve llama.cpp version
+        id: resolve_version
         shell: bash
         run: |
           set -euxo pipefail
-          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
           if [ "${{ inputs.llama_version }}" = "latest" ]; then
-            RELEASE_TAG=$(git describe --tags --always)
+            RELEASE_TAG=$(curl -s https://api.github.com/repos/ggerganov/llama.cpp/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
           else
             RELEASE_TAG="${{ inputs.llama_version }}"
           fi
           echo "RELEASE_TAG=${RELEASE_TAG}" >> $GITHUB_ENV
-          echo "Building llama.cpp ${RELEASE_TAG}"
+          echo "release_tag=${RELEASE_TAG}" >> $GITHUB_OUTPUT
+          echo "Resolved llama.cpp version: ${RELEASE_TAG}"
+
+      - name: Checkout llama.cpp source
+        uses: actions/checkout@v4
+        with:
+          repository: ggerganov/llama.cpp
+          ref: ${{ steps.resolve_version.outputs.release_tag }}
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Configure git safe directory
+        shell: bash
+        run: git config --global --add safe.directory "${GITHUB_WORKSPACE}"
 
       - name: Show build environment (Rocky Linux)
         if: inputs.base_os == 'rockylinux8'
