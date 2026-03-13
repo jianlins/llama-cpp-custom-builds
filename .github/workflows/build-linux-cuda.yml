@@ -116,7 +116,11 @@ jobs:
         run: |
           set -euxo pipefail
           if [ "${{ inputs.llama_version }}" = "latest" ]; then
-            RELEASE_TAG=$(curl -s https://api.github.com/repos/ggerganov/llama.cpp/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+            RELEASE_TAG=$(curl -sL https://api.github.com/repos/ggerganov/llama.cpp/releases/latest | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')
+            if [ -z "${RELEASE_TAG}" ]; then
+              echo "Failed to fetch latest release tag, falling back to git ls-remote"
+              RELEASE_TAG=$(git ls-remote --tags --sort=-v:refname https://github.com/ggerganov/llama.cpp.git 'refs/tags/b*' | head -1 | sed 's|.*refs/tags/||')
+            fi
           else
             RELEASE_TAG="${{ inputs.llama_version }}"
           fi
