@@ -1,4 +1,3 @@
-# llama-cpp-custom-builds - Build custom llama.cpp binaries
 name: Linux CUDA Custom Build
 
 on:
@@ -30,7 +29,7 @@ on:
           - 'ubuntu22.04'
           - 'ubuntu20.04'
       gpu_architectures:
-        description: 'GPU architectures (semicolon-separated, e.g., "70;75;80;86;89")'
+        description: 'GPU architectures (semicolon-separated, e.g., 70;75;80;86;89)'
         required: true
         default: '70;75;80;86;89;90'
         type: string
@@ -61,17 +60,12 @@ on:
 permissions:
   contents: write
 
-env:
-  BUILD_TYPE: ${{ inputs.build_type }}
-  CUDA_VERSION: ${{ inputs.cuda_version }}
-  BASE_OS: ${{ inputs.base_os }}
-
 jobs:
   build:
     runs-on: ubuntu-latest
     container:
       image: nvidia/cuda:${{ inputs.cuda_version }}-devel-${{ inputs.base_os }}
-      
+
     steps:
       - name: Install dependencies (Rocky Linux)
         if: inputs.base_os == 'rockylinux8'
@@ -115,7 +109,7 @@ jobs:
             file \
             findutils
           apt-get clean
-            
+
       - name: Checkout llama.cpp source
         uses: actions/checkout@v4
         with:
@@ -136,7 +130,7 @@ jobs:
           fi
           echo "RELEASE_TAG=${RELEASE_TAG}" >> $GITHUB_ENV
           echo "Building llama.cpp ${RELEASE_TAG}"
-          
+
       - name: Show build environment (Rocky Linux)
         if: inputs.base_os == 'rockylinux8'
         shell: bash
@@ -149,7 +143,7 @@ jobs:
           g++ --version
           cmake --version
           nvcc --version
-          
+
       - name: Show build environment (Ubuntu)
         if: startsWith(inputs.base_os, 'ubuntu')
         shell: bash
@@ -161,7 +155,7 @@ jobs:
           g++ --version
           cmake --version
           nvcc --version
-          
+
       - name: Configure CMake (Rocky Linux)
         if: inputs.base_os == 'rockylinux8'
         shell: bash
@@ -181,7 +175,7 @@ jobs:
             -DLLAMA_BUILD_EXAMPLES=ON \
             -DBUILD_SHARED_LIBS=OFF \
             -DCMAKE_EXE_LINKER_FLAGS=-Wl,--allow-shlib-undefined
-            
+
       - name: Configure CMake (Ubuntu)
         if: startsWith(inputs.base_os, 'ubuntu')
         shell: bash
@@ -198,7 +192,7 @@ jobs:
             -DLLAMA_BUILD_SERVER=ON \
             -DLLAMA_BUILD_EXAMPLES=ON \
             -DBUILD_SHARED_LIBS=OFF
-            
+
       - name: Build (Rocky Linux)
         if: inputs.base_os == 'rockylinux8'
         shell: bash
@@ -206,73 +200,53 @@ jobs:
           set -euxo pipefail
           set +u; source scl_source enable gcc-toolset-12; set -u
           cmake --build build --config ${{ inputs.build_type }} -j $(nproc)
-          
+
       - name: Build (Ubuntu)
         if: startsWith(inputs.base_os, 'ubuntu')
         shell: bash
         run: |
           set -euxo pipefail
           cmake --build build --config ${{ inputs.build_type }} -j $(nproc)
-          
+
       - name: Package artifacts
         shell: bash
         run: |
           set -euxo pipefail
-          
-          # Define output directory with OS name
           ARCHIVE_BASENAME="llama-bin-linux-cuda-${{ inputs.cuda_version }}-${{ inputs.base_os }}"
           OUTDIR="${ARCHIVE_BASENAME}-${RELEASE_TAG}"
-          
           mkdir -p "${OUTDIR}/bin" "${OUTDIR}/lib" "${OUTDIR}/meta"
-          
-          # Copy binaries
           if [[ -d build/bin ]]; then
             find build/bin -maxdepth 1 -type f \( -name 'llama-*' -o -name 'ggml-*' \) -exec cp -av {} "${OUTDIR}/bin/" \; 2>/dev/null || true
           fi
-          
-          # Copy libraries
           find build -maxdepth 3 -type f \( -name 'libllama*' -o -name 'libggml*' \) -exec cp -av {} "${OUTDIR}/lib/" \; 2>/dev/null || true
-          
-          # Git metadata
           git config --global --add safe.directory "${GITHUB_WORKSPACE}"
           git rev-parse HEAD > "${OUTDIR}/meta/git-commit.txt" 2>/dev/null || echo "${RELEASE_TAG}" > "${OUTDIR}/meta/git-commit.txt"
           echo "${RELEASE_TAG}" > "${OUTDIR}/meta/git-describe.txt"
-          
-          # Build environment metadata
           cat /etc/os-release > "${OUTDIR}/meta/os-release.txt" 2>/dev/null || true
           nvcc --version > "${OUTDIR}/meta/nvcc-version.txt"
           cmake --version > "${OUTDIR}/meta/cmake-version.txt"
-          
-          # Binary metadata
           if compgen -G "${OUTDIR}/bin/*" > /dev/null; then
             file "${OUTDIR}"/bin/* > "${OUTDIR}/meta/file-bin.txt" 2>/dev/null || true
             ldd "${OUTDIR}"/bin/* > "${OUTDIR}/meta/ldd-bin.txt" 2>/dev/null || true
           fi
-          
           if compgen -G "${OUTDIR}/lib/*" > /dev/null; then
             file "${OUTDIR}"/lib/* > "${OUTDIR}/meta/file-lib.txt" 2>/dev/null || true
             ldd "${OUTDIR}"/lib/* > "${OUTDIR}/meta/ldd-lib.txt" 2>/dev/null || true
           fi
-          
-          # Create BUILD_INFO.txt
           cat > "${OUTDIR}/BUILD_INFO.txt" <<EOF
-llama.cpp version: ${RELEASE_TAG}
-CUDA version: ${{ inputs.cuda_version }}
-Base OS: ${{ inputs.base_os }}
-GPU architectures: ${{ inputs.gpu_architectures }}
-Build type: ${{ inputs.build_type }}
-cuBLAS: ${{ inputs.enable_cublas }}
-Flash Attention: ${{ inputs.enable_flash_attn }}
-Built on: $(date -u)
-EOF
-          
-          # Create archive
+          llama.cpp version: ${RELEASE_TAG}
+          CUDA version: ${{ inputs.cuda_version }}
+          Base OS: ${{ inputs.base_os }}
+          GPU architectures: ${{ inputs.gpu_architectures }}
+          Build type: ${{ inputs.build_type }}
+          cuBLAS: ${{ inputs.enable_cublas }}
+          Flash Attention: ${{ inputs.enable_flash_attn }}
+          Built on: $(date -u)
+          EOF
           tar -czf "${ARCHIVE_BASENAME}-${RELEASE_TAG}.tar.gz" "${OUTDIR}"
           sha256sum "${ARCHIVE_BASENAME}-${RELEASE_TAG}.tar.gz" > "${ARCHIVE_BASENAME}-${RELEASE_TAG}.tar.gz.sha256"
-          
-          # Save archive basename for later steps
           echo "ARCHIVE_BASENAME=${ARCHIVE_BASENAME}" >> $GITHUB_ENV
-          
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -290,12 +264,3 @@ EOF
           files: |
             ${{ env.ARCHIVE_BASENAME }}-${{ env.RELEASE_TAG }}.tar.gz
             ${{ env.ARCHIVE_BASENAME }}-${{ env.RELEASE_TAG }}.tar.gz.sha256
-          body: |
-            ## Build Information
-            - llama.cpp version: ${{ env.RELEASE_TAG }}
-            - CUDA version: ${{ inputs.cuda_version }}
-            - Base OS: ${{ inputs.base_os }}
-            - GPU architectures: ${{ inputs.gpu_architectures }}
-            - Build type: ${{ inputs.build_type }}
-            - cuBLAS: ${{ inputs.enable_cublas }}
-            - Flash Attention: ${{ inputs.enable_flash_attn }}
