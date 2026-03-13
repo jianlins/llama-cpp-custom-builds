@@ -178,7 +178,6 @@ jobs:
             -DCMAKE_CUDA_ARCHITECTURES="${{ inputs.gpu_architectures }}" \
             -DGGML_CUDA_CUBLAS=${{ inputs.enable_cublas && 'ON' || 'OFF' }} \
             -DGGML_CUDA_FA_ALL_QUANTS=${{ inputs.enable_flash_attn && 'ON' || 'OFF' }} \
-            -DGGML_BACKEND_DL=ON \
             -DGGML_NATIVE=OFF \
             -DLLAMA_BUILD_SERVER=ON \
             -DLLAMA_BUILD_EXAMPLES=ON \
@@ -196,7 +195,6 @@ jobs:
             -DCMAKE_CUDA_ARCHITECTURES="${{ inputs.gpu_architectures }}" \
             -DGGML_CUDA_CUBLAS=${{ inputs.enable_cublas && 'ON' || 'OFF' }} \
             -DGGML_CUDA_FA_ALL_QUANTS=${{ inputs.enable_flash_attn && 'ON' || 'OFF' }} \
-            -DGGML_BACKEND_DL=ON \
             -DGGML_NATIVE=OFF \
             -DLLAMA_BUILD_SERVER=ON \
             -DLLAMA_BUILD_EXAMPLES=ON \
