@@ -1,43 +1,63 @@
-# This workflow uses actions that are not certified by GitHub.
-# They are provided by a third-party and are governed by
-# separate terms of service, privacy policy, and support
-# documentation.
-#
-# This workflow file requires a free account on Bearer.com to manage findings, notifications and more.
-# See https://docs.bearer.com/guides/bearer-cloud/
-name: Bearer
+name: Bearer Security Scan (llama.cpp source)
 
 on:
-  push:
-    branches: ["master" ]
-  pull_request:
-    # The branches below must be a subset of the branches above
-    branches: ["master"]
-  schedule:
-    - cron: '35 0 * * 5'
+  workflow_dispatch:
+    inputs:
+      llama_version:
+        description: 'llama.cpp version (tag or "latest")'
+        required: true
+        default: 'latest'
+        type: string
 
 permissions:
-  contents: read # for actions/checkout to fetch code
-  security-events: write # for github/codeql-action/upload-sarif to upload SARIF results
-  actions: read # only required for a private repository by github/codeql-action/upload-sarif to get the Action run status
+  contents: read
+  security-events: write
+  actions: read
 
 jobs:
-  bearer:
+  bearer-scan:
     runs-on: ubuntu-latest
     steps:
-      # Checkout project source
-      - uses: actions/checkout@v4
-      # Scan code using Bearer CLI
-      - name: Run Report
+      - name: Download llama.cpp source
+        run: |
+          if [ "${{ inputs.llama_version }}" = "latest" ]; then
+            RELEASE_TAG=$(curl -s https://api.github.com/repos/ggml-org/llama.cpp/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+          else
+            RELEASE_TAG="${{ inputs.llama_version }}"
+          fi
+
+          echo "Downloading llama.cpp ${RELEASE_TAG}"
+          wget -q "https://github.com/ggml-org/llama.cpp/archive/refs/tags/${RELEASE_TAG}.tar.gz"
+          tar -xzf "${RELEASE_TAG}.tar.gz"
+          mv llama.cpp-${RELEASE_TAG#v} llama-src
+          echo "RELEASE_TAG=${RELEASE_TAG}" >> "$GITHUB_ENV"
+
+      - name: Run Bearer scan
         id: report
         uses: bearer/bearer-action@828eeb928ce2f4a7ca5ed57fb8b59508cb8c79bc
         with:
-          api-key: ${{ secrets.BEARER_TOKEN }}
+          path: llama-src
           format: sarif
           output: results.sarif
           exit-code: 0
-      # Upload SARIF file generated in previous step
+        continue-on-error: true
+
+      - name: Warn on findings
+        if: always()
+        run: |
+          if [ -f results.sarif ]; then
+            COUNT=$(jq '[.runs[].results[]] | length' results.sarif 2>/dev/null || echo 0)
+            if [ "$COUNT" -gt 0 ]; then
+              echo "::warning::Bearer found ${COUNT} finding(s) in llama.cpp ${RELEASE_TAG}. See the SARIF upload for details."
+            else
+              echo "No findings detected by Bearer in llama.cpp ${RELEASE_TAG}."
+            fi
+          else
+            echo "::warning::Bearer scan did not produce a SARIF file."
+          fi
+
       - name: Upload SARIF file
+        if: always() && hashFiles('results.sarif') != ''
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: results.sarif
