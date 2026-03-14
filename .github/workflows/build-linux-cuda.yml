@@ -259,3 +259,12 @@ jobs:
           files: |
             ./${{ env.ARCHIVE_BASENAME }}-${{ env.RELEASE_TAG }}.tar.gz
             ./${{ env.ARCHIVE_BASENAME }}-${{ env.RELEASE_TAG }}.tar.gz.sha256
+          body: |
+            ## Build Parameters
+            | Parameter | Value |
+            |-----------|-------|
+            | llama.cpp version | `${{ env.RELEASE_TAG }}` |
+            | CUDA version | `${{ inputs.cuda_version }}` |
+            | Base OS | `${{ inputs.base_os }}` |
+            | GPU architectures | `${{ inputs.gpu_architectures }}` |
+            | Build type | `${{ inputs.build_type }}` |
