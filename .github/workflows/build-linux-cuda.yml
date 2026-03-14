@@ -41,16 +41,6 @@ on:
         options:
           - 'Release'
           - 'RelWithDebInfo'
-      enable_cublas:
-        description: 'Enable cuBLAS'
-        required: true
-        default: true
-        type: boolean
-      enable_flash_attn:
-        description: 'Enable Flash Attention'
-        required: true
-        default: true
-        type: boolean
       create_release:
         description: 'Create GitHub release with artifacts'
         required: true
@@ -171,17 +161,13 @@ jobs:
         run: |
           set -euxo pipefail
           set +u; source scl_source enable gcc-toolset-12; set -u
-          cmake -B build -G Ninja \
+          cmake -S . -B build \
+            -G Ninja \
             -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} \
             -DGGML_CUDA=ON \
+            -DGGML_NATIVE=OFF \
             -DCMAKE_CUDA_COMPILER=$(command -v nvcc) \
             -DCMAKE_CUDA_ARCHITECTURES="${{ inputs.gpu_architectures }}" \
-            -DGGML_CUDA_CUBLAS=${{ inputs.enable_cublas && 'ON' || 'OFF' }} \
-            -DGGML_CUDA_FA_ALL_QUANTS=${{ inputs.enable_flash_attn && 'ON' || 'OFF' }} \
-            -DGGML_NATIVE=OFF \
-            -DLLAMA_BUILD_SERVER=ON \
-            -DLLAMA_BUILD_EXAMPLES=ON \
-            -DBUILD_SHARED_LIBS=OFF \
             -DCMAKE_EXE_LINKER_FLAGS=-Wl,--allow-shlib-undefined
 
       - name: Configure CMake (Ubuntu)
@@ -189,16 +175,13 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          cmake -B build -G Ninja \
+          cmake -S . -B build \
+            -G Ninja \
             -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} \
             -DGGML_CUDA=ON \
-            -DCMAKE_CUDA_ARCHITECTURES="${{ inputs.gpu_architectures }}" \
-            -DGGML_CUDA_CUBLAS=${{ inputs.enable_cublas && 'ON' || 'OFF' }} \
-            -DGGML_CUDA_FA_ALL_QUANTS=${{ inputs.enable_flash_attn && 'ON' || 'OFF' }} \
             -DGGML_NATIVE=OFF \
-            -DLLAMA_BUILD_SERVER=ON \
-            -DLLAMA_BUILD_EXAMPLES=ON \
-            -DBUILD_SHARED_LIBS=OFF
+            -DCMAKE_CUDA_ARCHITECTURES="${{ inputs.gpu_architectures }}" \
+            -DCMAKE_EXE_LINKER_FLAGS=-Wl,--allow-shlib-undefined
 
       - name: Build (Rocky Linux)
         if: inputs.base_os == 'rockylinux8'
@@ -206,68 +189,73 @@ jobs:
         run: |
           set -euxo pipefail
           set +u; source scl_source enable gcc-toolset-12; set -u
-          cmake --build build --config ${{ inputs.build_type }} -j $(nproc)
+          cmake --build build --config ${{ inputs.build_type }} -j"$(nproc)"
 
       - name: Build (Ubuntu)
         if: startsWith(inputs.base_os, 'ubuntu')
         shell: bash
         run: |
           set -euxo pipefail
-          cmake --build build --config ${{ inputs.build_type }} -j $(nproc)
+          cmake --build build --config ${{ inputs.build_type }} -j"$(nproc)"
 
-      - name: Package artifacts
+      - name: Prepare release payload
         shell: bash
         run: |
           set -euxo pipefail
+
           ARCHIVE_BASENAME="llama-bin-linux-cuda-${{ inputs.cuda_version }}-${{ inputs.base_os }}"
           OUTDIR="${ARCHIVE_BASENAME}-${RELEASE_TAG}"
           mkdir -p "${OUTDIR}/bin" "${OUTDIR}/lib" "${OUTDIR}/meta"
+
           if [[ -d build/bin ]]; then
-            find build/bin -maxdepth 1 -type f \( -name 'llama-*' -o -name 'ggml-*' \) -exec cp -av {} "${OUTDIR}/bin/" \; 2>/dev/null || true
+            find build/bin -maxdepth 1 -type f \( -name 'llama-*' -o -name 'ggml-*' \) -exec cp -av {} "${OUTDIR}/bin/" \;
           fi
-          find build -maxdepth 3 -type f \( -name 'libllama*' -o -name 'libggml*' \) -exec cp -av {} "${OUTDIR}/lib/" \; 2>/dev/null || true
+
+          # Keep both files and symlinks so SONAME links (e.g. libmtmd.so.0) survive packaging.
+          find build -maxdepth 3 \( -type f -o -type l \) \( -name 'libllama*' -o -name 'libggml*' -o -name 'libmtmd*' \) -exec cp -av {} "${OUTDIR}/lib/" \; || true
+
+          # Fail fast if required runtime library links are missing from the payload.
+          test -e "${OUTDIR}/lib/libmtmd.so.0"
+          test -e "${OUTDIR}/lib/libllama.so.0"
+
           git config --global --add safe.directory "${GITHUB_WORKSPACE}"
-          git rev-parse HEAD > "${OUTDIR}/meta/git-commit.txt" 2>/dev/null || echo "${RELEASE_TAG}" > "${OUTDIR}/meta/git-commit.txt"
-          echo "${RELEASE_TAG}" > "${OUTDIR}/meta/git-describe.txt"
-          cat /etc/os-release > "${OUTDIR}/meta/os-release.txt" 2>/dev/null || true
-          nvcc --version > "${OUTDIR}/meta/nvcc-version.txt"
+
+          git rev-parse HEAD > "${OUTDIR}/meta/git-commit.txt"
+          git describe --tags --always > "${OUTDIR}/meta/git-describe.txt" || true
+          cat /etc/os-release > "${OUTDIR}/meta/os-release.txt" || true
+          gcc --version > "${OUTDIR}/meta/gcc-version.txt"
+          g++ --version > "${OUTDIR}/meta/gxx-version.txt"
           cmake --version > "${OUTDIR}/meta/cmake-version.txt"
+          nvcc --version > "${OUTDIR}/meta/nvcc-version.txt"
+
           if compgen -G "${OUTDIR}/bin/*" > /dev/null; then
-            file "${OUTDIR}"/bin/* > "${OUTDIR}/meta/file-bin.txt" 2>/dev/null || true
-            ldd "${OUTDIR}"/bin/* > "${OUTDIR}/meta/ldd-bin.txt" 2>/dev/null || true
+            file "${OUTDIR}"/bin/* > "${OUTDIR}/meta/file-bin.txt" || true
+            ldd "${OUTDIR}"/bin/* > "${OUTDIR}/meta/ldd-bin.txt" || true
           fi
+
           if compgen -G "${OUTDIR}/lib/*" > /dev/null; then
-            file "${OUTDIR}"/lib/* > "${OUTDIR}/meta/file-lib.txt" 2>/dev/null || true
-            ldd "${OUTDIR}"/lib/* > "${OUTDIR}/meta/ldd-lib.txt" 2>/dev/null || true
+            file "${OUTDIR}"/lib/* > "${OUTDIR}/meta/file-lib.txt" || true
+            ldd "${OUTDIR}"/lib/* > "${OUTDIR}/meta/ldd-lib.txt" || true
           fi
-          cat > "${OUTDIR}/BUILD_INFO.txt" <<EOF
-          llama.cpp version: ${RELEASE_TAG}
-          CUDA version: ${{ inputs.cuda_version }}
-          Base OS: ${{ inputs.base_os }}
-          GPU architectures: ${{ inputs.gpu_architectures }}
-          Build type: ${{ inputs.build_type }}
-          cuBLAS: ${{ inputs.enable_cublas }}
-          Flash Attention: ${{ inputs.enable_flash_attn }}
-          Built on: $(date -u)
-          EOF
+
           tar -czf "${ARCHIVE_BASENAME}-${RELEASE_TAG}.tar.gz" "${OUTDIR}"
           sha256sum "${ARCHIVE_BASENAME}-${RELEASE_TAG}.tar.gz" > "${ARCHIVE_BASENAME}-${RELEASE_TAG}.tar.gz.sha256"
           echo "ARCHIVE_BASENAME=${ARCHIVE_BASENAME}" >> $GITHUB_ENV
 
-      - name: Upload artifacts
+      - name: Upload workflow artifact
+        if: inputs.create_release != true
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARCHIVE_BASENAME }}-${{ env.RELEASE_TAG }}
           path: |
             ${{ env.ARCHIVE_BASENAME }}-${{ env.RELEASE_TAG }}.tar.gz
             ${{ env.ARCHIVE_BASENAME }}-${{ env.RELEASE_TAG }}.tar.gz.sha256
-          retention-days: 30
 
-      - name: Create release
+      - name: Upload release assets
         if: inputs.create_release == true
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           files: |
-            ${{ env.ARCHIVE_BASENAME }}-${{ env.RELEASE_TAG }}.tar.gz
-            ${{ env.ARCHIVE_BASENAME }}-${{ env.RELEASE_TAG }}.tar.gz.sha256
+            ./${{ env.ARCHIVE_BASENAME }}-${{ env.RELEASE_TAG }}.tar.gz
+            ./${{ env.ARCHIVE_BASENAME }}-${{ env.RELEASE_TAG }}.tar.gz.sha256
