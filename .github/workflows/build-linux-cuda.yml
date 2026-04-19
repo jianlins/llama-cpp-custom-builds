@@ -270,6 +270,7 @@ jobs:
             ## Build Parameters
             | Parameter | Value |
             |-----------|-------|
+            | Source repo | [`${{ inputs.repo }}`](https://github.com/${{ inputs.repo }}) |
             | llama.cpp version | `${{ env.RELEASE_TAG }}` |
             | CUDA version | `${{ inputs.cuda_version }}` |
             | Base OS | `${{ inputs.base_os }}` |
