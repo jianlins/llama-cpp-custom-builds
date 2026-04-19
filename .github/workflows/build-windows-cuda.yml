@@ -4,6 +4,11 @@ name: Windows CUDA Custom Build
 on:
   workflow_dispatch:
     inputs:
+      repo:
+        description: 'GitHub repo to pull from (owner/name)'
+        required: false
+        default: 'ggml-org/llama.cpp'
+        type: string
       llama_version:
         description: 'llama.cpp version (tag or "latest")'
         required: true
@@ -53,19 +58,20 @@ jobs:
       - name: Download llama.cpp source
         shell: pwsh
         run: |
+          $repo = "${{ inputs.repo }}"
           if ("${{ inputs.llama_version }}" -eq "latest") {
-            $release = Invoke-RestMethod -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
+            $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest"
             $releaseTag = $release.tag_name
           } else {
             $releaseTag = "${{ inputs.llama_version }}"
           }
-          
-          Write-Host "Downloading llama.cpp $releaseTag"
-          $url = "https://github.com/ggml-org/llama.cpp/archive/refs/tags/$releaseTag.zip"
+
+          Write-Host "Downloading $repo $releaseTag"
+          $url = "https://github.com/$repo/archive/refs/tags/$releaseTag.zip"
           Invoke-WebRequest -Uri $url -OutFile "llama.zip"
           Expand-Archive -Path "llama.zip" -DestinationPath "."
-          
-          $extractedName = Get-ChildItem -Directory | Where-Object { $_.Name -like "llama.cpp-*" } | Select-Object -First 1
+
+          $extractedName = Get-ChildItem -Directory | Where-Object { $_.Name -notlike ".*" } | Select-Object -First 1
           Move-Item -Path $extractedName.FullName -Destination "llama.cpp"
           
           echo "RELEASE_TAG=$releaseTag" >> $env:GITHUB_ENV

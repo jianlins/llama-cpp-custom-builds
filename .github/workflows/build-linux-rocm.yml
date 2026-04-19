@@ -4,6 +4,11 @@ name: Linux ROCm (AMD GPU) Custom Build
 on:
   workflow_dispatch:
     inputs:
+      repo:
+        description: 'GitHub repo to pull from (owner/name)'
+        required: false
+        default: 'ggml-org/llama.cpp'
+        type: string
       llama_version:
         description: 'llama.cpp version (tag or "latest")'
         required: true
@@ -53,16 +58,18 @@ jobs:
             
       - name: Download llama.cpp source
         run: |
+          REPO="${{ inputs.repo }}"
           if [ "${{ inputs.llama_version }}" = "latest" ]; then
-            RELEASE_TAG=$(curl -s https://api.github.com/repos/ggml-org/llama.cpp/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+            RELEASE_TAG=$(curl -s https://api.github.com/repos/${REPO}/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
           else
             RELEASE_TAG="${{ inputs.llama_version }}"
           fi
-          
-          echo "Downloading llama.cpp ${RELEASE_TAG}"
-          wget -q https://github.com/ggml-org/llama.cpp/archive/refs/tags/${RELEASE_TAG}.tar.gz
+
+          echo "Downloading ${REPO} ${RELEASE_TAG}"
+          wget -q https://github.com/${REPO}/archive/refs/tags/${RELEASE_TAG}.tar.gz
           tar -xzf ${RELEASE_TAG}.tar.gz
-          mv llama.cpp-${RELEASE_TAG#v} llama.cpp
+          EXTRACTED_DIR=$(ls -d */ | head -1 | sed 's|/$||')
+          mv "${EXTRACTED_DIR}" llama.cpp
           echo "RELEASE_TAG=${RELEASE_TAG}" >> $GITHUB_ENV
           
       - name: Configure CMake
