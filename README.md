@@ -18,8 +18,10 @@ This repository contains GitHub Actions workflows for building custom llama.cpp 
 Build llama.cpp with NVIDIA CUDA support for Linux (x86_64).
 
 **Configurable Options:**
+- **Source repo**: GitHub repo to build from (default: `ggml-org/llama.cpp`). Useful for building forks such as [llama-cpp-turboquant](https://github.com/TheTom/llama-cpp-turboquant)
 - **llama.cpp version**: Specific tag (e.g., `b1234`) or `latest`
 - **CUDA version**: 12.8.0, 12.6.2, 12.4.0, 12.2.0, 11.8.0
+- **Base OS**: Container base OS for binary compatibility (`rockylinux8`, `ubuntu22.04`, `ubuntu20.04`)
 - **GPU architectures**: Semicolon-separated list (e.g., `70;75;80;86;89;90`)
   - 70 = Volta (V100)
   - 75 = Turing (RTX 20xx, T4)
@@ -28,16 +30,18 @@ Build llama.cpp with NVIDIA CUDA support for Linux (x86_64).
   - 89 = Ada Lovelace (RTX 40xx)
   - 90 = Hopper (H100)
 - **Build type**: Release or RelWithDebInfo
-- **Enable cuBLAS**: true/false
-- **Enable Flash Attention**: true/false
+
+**Build notes:**
+- NCCL is disabled (`-DGGML_CUDA_USE_NCCL=OFF`) to produce self-contained binaries that work on airgapped machines without requiring `libnccl.so`. Multi-GPU tensor splitting still works via llama.cpp's native CUDA peer-to-peer path.
 
 **Uses**: NVIDIA CUDA container for consistent build environment
-**Output**: Includes SHA256 checksum and detailed metadata
+**Output**: Includes SHA256 checksum, detailed metadata, and source repo link in release notes
 
 **Example Use Cases:**
 - For RTX 3090: Use CUDA 12.6.2 with architecture `86`
 - For RTX 4090: Use CUDA 12.6.2 with architecture `89`
 - For A100: Use CUDA 12.6.2 with architecture `80`
+- For TurboQuant fork: Set source repo to `TheTom/llama-cpp-turboquant`
 
 ---
 
@@ -45,6 +49,7 @@ Build llama.cpp with NVIDIA CUDA support for Linux (x86_64).
 Build llama.cpp with AMD ROCm support for Linux (x86_64).
 
 **Configurable Options:**
+- **Source repo**: GitHub repo to build from (default: `ggml-org/llama.cpp`)
 - **llama.cpp version**: Specific tag or `latest`
 - **ROCm version**: 6.1.2, 6.0.0, 5.7.0
 - **GPU architectures**: Semicolon-separated list (e.g., `gfx900;gfx906;gfx908;gfx90a;gfx1030;gfx1100`)
@@ -69,6 +74,7 @@ Build llama.cpp with AMD ROCm support for Linux (x86_64).
 Build llama.cpp for CPU-only inference on Linux (x86_64).
 
 **Configurable Options:**
+- **Source repo**: GitHub repo to build from (default: `ggml-org/llama.cpp`)
 - **llama.cpp version**: Specific tag or `latest`
 - **Ubuntu version**: 24.04, 22.04, 20.04
 - **Build type**: Release or RelWithDebInfo
@@ -85,6 +91,7 @@ Build llama.cpp for CPU-only inference on Linux (x86_64).
 Cross-compile llama.cpp for ARM64/aarch64 Linux systems (e.g., Raspberry Pi 4/5, AWS Graviton, NVIDIA Jetson).
 
 **Configurable Options:**
+- **Source repo**: GitHub repo to build from (default: `ggml-org/llama.cpp`)
 - **llama.cpp version**: Specific tag or `latest`
 - **Build type**: Release or RelWithDebInfo
 - **Enable OpenBLAS**: true/false (ARM NEON optimizations)
@@ -106,6 +113,7 @@ Cross-compile llama.cpp for ARM64/aarch64 Linux systems (e.g., Raspberry Pi 4/5,
 Build llama.cpp with NVIDIA CUDA support for Windows.
 
 **Configurable Options:**
+- **Source repo**: GitHub repo to build from (default: `ggml-org/llama.cpp`)
 - **llama.cpp version**: Specific tag or `latest`
 - **CUDA version**: 12.6.2, 12.4.0, 12.2.0, 11.8.0
 - **GPU architectures**: Semicolon-separated list
@@ -120,6 +128,7 @@ Build llama.cpp with NVIDIA CUDA support for Windows.
 Build llama.cpp for CPU-only inference on Windows.
 
 **Configurable Options:**
+- **Source repo**: GitHub repo to build from (default: `ggml-org/llama.cpp`)
 - **llama.cpp version**: Specific tag or `latest`
 - **Architecture**: x64, ARM64
 - **Compiler**: MSVC or Clang
@@ -135,6 +144,7 @@ Build llama.cpp for CPU-only inference on Windows.
 Build llama.cpp with Apple Metal GPU acceleration for macOS.
 
 **Configurable Options:**
+- **Source repo**: GitHub repo to build from (default: `ggml-org/llama.cpp`)
 - **llama.cpp version**: Specific tag or `latest`
 - **Architecture**: arm64 (Apple Silicon), x86_64 (Intel), or universal (both)
 - **Build type**: Release or RelWithDebInfo
