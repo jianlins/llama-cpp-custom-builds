@@ -1,0 +1,78 @@
+name: Package CUDA Runtime Libraries
+
+on:
+  workflow_dispatch:
+    inputs:
+      cuda_version:
+        description: 'CUDA version'
+        required: true
+        default: '12.6.2'
+        type: choice
+        options:
+          - '12.8.0'
+          - '12.6.2'
+          - '12.4.0'
+          - '12.2.0'
+          - '11.8.0'
+      base_os:
+        description: 'Base OS for container (must match your build)'
+        required: true
+        default: 'rockylinux8'
+        type: choice
+        options:
+          - 'rockylinux8'
+          - 'ubuntu22.04'
+          - 'ubuntu20.04'
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    container:
+      image: nvidia/cuda:${{ inputs.cuda_version }}-devel-${{ inputs.base_os }}
+
+    steps:
+      - name: Collect CUDA runtime libraries
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          OUTDIR="cuda-libs-${{ inputs.cuda_version }}-${{ inputs.base_os }}"
+          mkdir -p "${OUTDIR}"
+
+          # Collect CUDA runtime shared libraries needed for llama.cpp.
+          # Use -L to dereference symlinks so we get real files.
+          LIBS=(
+            libnccl
+            libcudart
+            libcublas
+            libcublasLt
+            libcufft
+            libcurand
+            libcusolver
+            libcusparse
+          )
+
+          for lib in "${LIBS[@]}"; do
+            find /usr/local/cuda /usr/lib /usr/lib64 -maxdepth 5 \
+              \( -type f -o -type l \) -name "${lib}.so*" 2>/dev/null \
+            | while read -r f; do
+              cp -avL "$f" "${OUTDIR}/" 2>/dev/null || true
+            done
+          done
+
+          echo "=== Packaged libraries ==="
+          ls -lh "${OUTDIR}/"
+
+          tar -czf "${OUTDIR}.tar.gz" "${OUTDIR}"
+          sha256sum "${OUTDIR}.tar.gz" > "${OUTDIR}.tar.gz.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cuda-libs-${{ inputs.cuda_version }}-${{ inputs.base_os }}
+          path: |
+            cuda-libs-${{ inputs.cuda_version }}-${{ inputs.base_os }}.tar.gz
+            cuda-libs-${{ inputs.cuda_version }}-${{ inputs.base_os }}.tar.gz.sha256
