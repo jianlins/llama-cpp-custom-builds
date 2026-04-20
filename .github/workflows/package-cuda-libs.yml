@@ -56,10 +56,18 @@ jobs:
           )
 
           for lib in "${LIBS[@]}"; do
+            # First pass: copy real files only (no symlinks).
             find /usr/local/cuda /usr/lib /usr/lib64 -maxdepth 5 \
-              \( -type f -o -type l \) -name "${lib}.so*" 2>/dev/null \
+              -type f -name "${lib}.so*" 2>/dev/null \
             | while read -r f; do
-              cp -avL "$f" "${OUTDIR}/" 2>/dev/null || true
+              cp -av "$f" "${OUTDIR}/" 2>/dev/null || true
+            done
+            # Second pass: recreate symlinks with the same targets.
+            find /usr/local/cuda /usr/lib /usr/lib64 -maxdepth 5 \
+              -type l -name "${lib}.so*" 2>/dev/null \
+            | while read -r f; do
+              target=$(readlink "$f")
+              ln -sfv "$(basename "$target")" "${OUTDIR}/$(basename "$f")" 2>/dev/null || true
             done
           done
 
