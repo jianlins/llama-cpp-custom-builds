@@ -20,6 +20,7 @@ on:
         default: '12.6.2'
         type: choice
         options:
+          - '12.8.2'
           - '12.6.2'
           - '12.4.0'
           - '12.2.0'
@@ -49,7 +50,7 @@ jobs:
     
     steps:
       - name: Install CUDA Toolkit
-        uses: Jimver/cuda-toolkit@v0.2.16
+        uses: Jimver/cuda-toolkit@master
         with:
           cuda: ${{ inputs.cuda_version }}
           method: 'network'
