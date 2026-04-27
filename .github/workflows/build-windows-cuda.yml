@@ -72,12 +72,26 @@ jobs:
           Invoke-WebRequest -Uri $url -OutFile "llama.zip"
           Expand-Archive -Path "llama.zip" -DestinationPath "."
 
-          $extractedName = Get-ChildItem -Directory | Where-Object { $_.Name -notlike ".*" } | Select-Object -First 1
-          Move-Item -Path $extractedName.FullName -Destination "llama.cpp"
+          $repoName = ($repo -split "/")[-1]
+          $candidateDirs = Get-ChildItem -Directory | Where-Object { $_.Name -like "$repoName-*" }
+          if (-not $candidateDirs) {
+            throw "Could not find extracted source directory for $repoName. Found: $((Get-ChildItem -Directory | Select-Object -ExpandProperty Name) -join ', ')"
+          }
+
+          $extractedDir = $candidateDirs | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (Test-Path "llama.cpp") {
+            Remove-Item -Path "llama.cpp" -Recurse -Force
+          }
+
+          Move-Item -Path $extractedDir.FullName -Destination "llama.cpp"
+          if (-not (Test-Path "llama.cpp/CMakeLists.txt")) {
+            throw "llama.cpp/CMakeLists.txt not found after extraction. Contents: $((Get-ChildItem -Path 'llama.cpp' -Force | Select-Object -ExpandProperty Name) -join ', ')"
+          }
           
           echo "RELEASE_TAG=$releaseTag" >> $env:GITHUB_ENV
           
       - name: Configure CMake
+        shell: pwsh
         run: |
           cmake -B build -S llama.cpp `
             -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} `
@@ -91,6 +105,7 @@ jobs:
             -DBUILD_SHARED_LIBS=OFF
             
       - name: Build
+        shell: pwsh
         run: |
           cmake --build build --config ${{ inputs.build_type }} -j ${env:NUMBER_OF_PROCESSORS}
           
