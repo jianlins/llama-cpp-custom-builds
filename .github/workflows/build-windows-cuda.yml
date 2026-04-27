@@ -98,7 +98,7 @@ jobs:
             -DGGML_CUDA=ON `
             -DCMAKE_CUDA_ARCHITECTURES="${{ inputs.gpu_architectures }}" `
             -DGGML_CUDA_CUBLAS=${{ inputs.enable_cublas && 'ON' || 'OFF' }} `
-            -DGGML_BACKEND_DL=ON `
+            -DGGML_BACKEND_DL=OFF `
             -DGGML_NATIVE=OFF `
             -DLLAMA_BUILD_SERVER=ON `
             -DLLAMA_BUILD_EXAMPLES=ON `
