@@ -118,13 +118,8 @@ jobs:
           Copy-Item -Path "build/bin/${{ inputs.build_type }}/*.exe" -Destination "package/bin/" -ErrorAction SilentlyContinue
           Copy-Item -Path "build/bin/${{ inputs.build_type }}/*.dll" -Destination "package/bin/" -ErrorAction SilentlyContinue
           
-          # Copy CUDA runtime DLLs
-          $cudaPath = "$env:CUDA_PATH\bin"
-          if (Test-Path $cudaPath) {
-            Copy-Item -Path "$cudaPath\cudart64*.dll" -Destination "package/bin/" -ErrorAction SilentlyContinue
-            Copy-Item -Path "$cudaPath\cublas64*.dll" -Destination "package/bin/" -ErrorAction SilentlyContinue
-            Copy-Item -Path "$cudaPath\cublasLt64*.dll" -Destination "package/bin/" -ErrorAction SilentlyContinue
-          }
+          # Note: CUDA runtime DLLs (cudart64, cublas64, cublasLt64) are excluded from package
+          # to reduce artifact size. Users must install CUDA Toolkit separately.
           
           # Create metadata
           @"
@@ -134,6 +129,7 @@ jobs:
           Build type: ${{ inputs.build_type }}
           cuBLAS: ${{ inputs.enable_cublas }}
           Built on: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")
+          Note: CUDA runtime DLLs must be installed separately from NVIDIA
           "@ | Out-File -FilePath "package/BUILD_INFO.txt"
           
           # Create zip
