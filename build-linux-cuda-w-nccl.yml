@@ -1,0 +1,317 @@
+name: Linux CUDA Custom Build W DGGML_CUDA_USE_NCCL
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: 'GitHub repo to pull from (owner/name)'
+        required: false
+        default: 'ggml-org/llama.cpp'
+        type: string
+      llama_version:
+        description: 'llama.cpp version (tag or "latest")'
+        required: true
+        default: 'latest'
+        type: string
+      cuda_version:
+        description: 'CUDA version'
+        required: true
+        default: '12.6.2'
+        type: choice
+        options:
+          - '12.8.0'
+          - '12.6.2'
+          - '12.4.0'
+          - '12.2.0'
+          - '11.8.0'
+      base_os:
+        description: 'Base OS for container (affects binary compatibility)'
+        required: true
+        default: 'rockylinux8'
+        type: choice
+        options:
+          - 'rockylinux8'
+          - 'ubuntu22.04'
+          - 'ubuntu20.04'
+      gpu_architectures:
+        description: 'GPU architectures (semicolon-separated, e.g., 70;75;80;86;89)'
+        required: true
+        default: '70;75;80;86;89;90'
+        type: string
+      build_type:
+        description: 'Build type'
+        required: true
+        default: 'Release'
+        type: choice
+        options:
+          - 'Release'
+          - 'RelWithDebInfo'
+      create_release:
+        description: 'Create GitHub release with artifacts'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: nvidia/cuda:${{ inputs.cuda_version }}-devel-${{ inputs.base_os }}
+
+    steps:
+      - name: Install dependencies (Rocky Linux)
+        if: inputs.base_os == 'rockylinux8'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          dnf -y install epel-release
+          dnf config-manager --set-enabled powertools
+          dnf -y install \
+            git \
+            cmake \
+            gcc-toolset-12 \
+            make \
+            ninja-build \
+            tar \
+            gzip \
+            zip \
+            findutils \
+            file \
+            which \
+            curl \
+            libnccl \
+            libnccl-devel \
+            patchelf
+          dnf clean all
+
+      - name: Install dependencies (Ubuntu)
+        if: startsWith(inputs.base_os, 'ubuntu')
+        shell: bash
+        run: |
+          set -euxo pipefail
+          apt-get update
+          apt-get install -y \
+            build-essential \
+            cmake \
+            ninja-build \
+            git \
+            wget \
+            curl \
+            libcurl4-openssl-dev \
+            ccache \
+            tar \
+            gzip \
+            file \
+            findutils \
+            libnccl2 \
+            libnccl-dev \
+            patchelf
+          apt-get clean
+
+      - name: Resolve llama.cpp version
+        id: resolve_version
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if [ "${{ inputs.llama_version }}" = "latest" ]; then
+            RELEASE_TAG=$(curl -sL https://api.github.com/repos/${{ inputs.repo }}/releases/latest | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')
+            if [ -z "${RELEASE_TAG}" ]; then
+              echo "Failed to fetch latest release tag, falling back to git ls-remote"
+              RELEASE_TAG=$(git ls-remote --tags --sort=-v:refname https://github.com/${{ inputs.repo }}.git 'refs/tags/b*' | head -1 | sed 's|.*refs/tags/||')
+            fi
+          else
+            RELEASE_TAG="${{ inputs.llama_version }}"
+          fi
+          echo "RELEASE_TAG=${RELEASE_TAG}" >> $GITHUB_ENV
+          echo "release_tag=${RELEASE_TAG}" >> $GITHUB_OUTPUT
+          echo "Resolved llama.cpp version: ${RELEASE_TAG}"
+
+      - name: Checkout llama.cpp source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.repo }}
+          ref: ${{ steps.resolve_version.outputs.release_tag }}
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Configure git safe directory
+        shell: bash
+        run: git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+
+      - name: Show build environment (Rocky Linux)
+        if: inputs.base_os == 'rockylinux8'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          set +u; source scl_source enable gcc-toolset-12; set -u
+          cat /etc/os-release || true
+          uname -a
+          gcc --version
+          g++ --version
+          cmake --version
+          nvcc --version
+
+      - name: Show build environment (Ubuntu)
+        if: startsWith(inputs.base_os, 'ubuntu')
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cat /etc/os-release || true
+          uname -a
+          gcc --version
+          g++ --version
+          cmake --version
+          nvcc --version
+
+      - name: Configure CMake (Rocky Linux)
+        if: inputs.base_os == 'rockylinux8'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          set +u; source scl_source enable gcc-toolset-12; set -u
+          cmake -S . -B build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} \
+            -DGGML_CUDA=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_CUDA_USE_NCCL=ON \
+            -DCMAKE_CUDA_COMPILER=$(command -v nvcc) \
+            -DCMAKE_CUDA_ARCHITECTURES="${{ inputs.gpu_architectures }}" \
+            -DCMAKE_EXE_LINKER_FLAGS=-Wl,--allow-shlib-undefined \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN;$ORIGIN/../lib'
+
+      - name: Configure CMake (Ubuntu)
+        if: startsWith(inputs.base_os, 'ubuntu')
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake -S . -B build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} \
+            -DGGML_CUDA=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_CUDA_USE_NCCL=ON \
+            -DCMAKE_CUDA_ARCHITECTURES="${{ inputs.gpu_architectures }}" \
+            -DCMAKE_EXE_LINKER_FLAGS=-Wl,--allow-shlib-undefined \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN;$ORIGIN/../lib'
+
+      - name: Build (Rocky Linux)
+        if: inputs.base_os == 'rockylinux8'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          set +u; source scl_source enable gcc-toolset-12; set -u
+          cmake --build build --config ${{ inputs.build_type }} -j"$(nproc)"
+
+      - name: Build (Ubuntu)
+        if: startsWith(inputs.base_os, 'ubuntu')
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake --build build --config ${{ inputs.build_type }} -j"$(nproc)"
+
+      - name: Prepare release payload
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          ARCHIVE_BASENAME="llama-bin-linux-cuda-${{ inputs.cuda_version }}-${{ inputs.base_os }}"
+          OUTDIR="${ARCHIVE_BASENAME}-${RELEASE_TAG}"
+          mkdir -p "${OUTDIR}/bin" "${OUTDIR}/lib" "${OUTDIR}/meta"
+
+          if [[ -d build/bin ]]; then
+            find build/bin -maxdepth 1 -type f \( -name 'llama-*' -o -name 'ggml-*' \) -exec cp -av {} "${OUTDIR}/bin/" \;
+          fi
+
+          # Keep both files and symlinks so SONAME links (e.g. libmtmd.so.0) survive packaging.
+          find build -maxdepth 3 \( -type f -o -type l \) \( -name 'libllama*' -o -name 'libggml*' -o -name 'libmtmd*' \) -exec cp -av {} "${OUTDIR}/lib/" \; || true
+
+
+          # --- Bundle CUDA + NCCL runtime shared libraries ---
+          # Collect every shared lib the binaries and libraries actually depend on,
+          # then copy the NVIDIA/CUDA ones into our lib/ folder.
+
+          bundle_libs() {
+            local target="$1"
+            # Resolve each dependency path via ldd and copy CUDA-related ones.
+            ldd "$target" 2>/dev/null | awk '/=> \// {print $3}' | while read -r dep; do
+              case "$dep" in
+                *libnccl.so*|*libcublas*|*libcublasLt*|*libcudart*|*libcudnn*|*libcufft*|*libcurand*|*libcusparse*|*libcusolver*|*libnvrtc*|*libnvToolsExt*|*libnvJitLink*)
+                  cp -av "$dep" "${OUTDIR}/lib/" || true
+                  ;;
+              esac
+            done
+          }
+
+          # Run over all bins and the libs we already copied
+          for f in "${OUTDIR}/bin/"* "${OUTDIR}/lib/"*.so*; do
+            [ -e "$f" ] && bundle_libs "$f"
+          done
+
+          # Also explicitly grab libnccl.so.2 from standard locations as a fallback
+          for d in /usr/lib64 /usr/lib/x86_64-linux-gnu /usr/local/cuda/lib64; do
+            if ls "$d"/libnccl.so* >/dev/null 2>&1; then
+              cp -av "$d"/libnccl.so* "${OUTDIR}/lib/" || true
+            fi
+          done
+
+          # Fail fast if required runtime library links are missing from the payload.
+          test -e "${OUTDIR}/lib/libmtmd.so.0"
+          test -e "${OUTDIR}/lib/libllama.so.0"
+
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+
+          git rev-parse HEAD > "${OUTDIR}/meta/git-commit.txt"
+          git describe --tags --always > "${OUTDIR}/meta/git-describe.txt" || true
+          cat /etc/os-release > "${OUTDIR}/meta/os-release.txt" || true
+          gcc --version > "${OUTDIR}/meta/gcc-version.txt"
+          g++ --version > "${OUTDIR}/meta/gxx-version.txt"
+          cmake --version > "${OUTDIR}/meta/cmake-version.txt"
+          nvcc --version > "${OUTDIR}/meta/nvcc-version.txt"
+
+          if compgen -G "${OUTDIR}/bin/*" > /dev/null; then
+            file "${OUTDIR}"/bin/* > "${OUTDIR}/meta/file-bin.txt" || true
+            ldd "${OUTDIR}"/bin/* > "${OUTDIR}/meta/ldd-bin.txt" || true
+          fi
+
+          if compgen -G "${OUTDIR}/lib/*" > /dev/null; then
+            file "${OUTDIR}"/lib/* > "${OUTDIR}/meta/file-lib.txt" || true
+            ldd "${OUTDIR}"/lib/* > "${OUTDIR}/meta/ldd-lib.txt" || true
+          fi
+
+          tar -czf "${ARCHIVE_BASENAME}-${RELEASE_TAG}.tar.gz" "${OUTDIR}"
+          sha256sum "${ARCHIVE_BASENAME}-${RELEASE_TAG}.tar.gz" > "${ARCHIVE_BASENAME}-${RELEASE_TAG}.tar.gz.sha256"
+          echo "ARCHIVE_BASENAME=${ARCHIVE_BASENAME}" >> $GITHUB_ENV
+
+      - name: Upload workflow artifact
+        if: inputs.create_release != true
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARCHIVE_BASENAME }}-${{ env.RELEASE_TAG }}
+          path: |
+            ${{ env.ARCHIVE_BASENAME }}-${{ env.RELEASE_TAG }}.tar.gz
+            ${{ env.ARCHIVE_BASENAME }}-${{ env.RELEASE_TAG }}.tar.gz.sha256
+
+      - name: Upload release assets
+        if: inputs.create_release == true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          files: |
+            ./${{ env.ARCHIVE_BASENAME }}-${{ env.RELEASE_TAG }}.tar.gz
+            ./${{ env.ARCHIVE_BASENAME }}-${{ env.RELEASE_TAG }}.tar.gz.sha256
+          body: |
+            ## Build Parameters
+            | Parameter | Value |
+            |-----------|-------|
+            | Source repo | [`${{ inputs.repo }}`](https://github.com/${{ inputs.repo }}) |
+            | llama.cpp version | `${{ env.RELEASE_TAG }}` |
+            | CUDA version | `${{ inputs.cuda_version }}` |
+            | Base OS | `${{ inputs.base_os }}` |
+            | GPU architectures | `${{ inputs.gpu_architectures }}` |
+            | Build type | `${{ inputs.build_type }}` |
